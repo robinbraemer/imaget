@@ -23,8 +23,8 @@ Flags
 -u (required): is the http(s) URL to find and images from to download.
 
 -d (optional): is the destination to download the images to.
-               It can either be a directory to drop all images into a .zip
-               archive to create and save all the images into.
+               It can either be the directory to save all images at or
+               a path to create a .zip archive to save the images in.
 
 -f (optional): saves the downloaded images as a flat hierarchie,
                instead of creating subdirectories as per the image download URLs.
@@ -55,6 +55,7 @@ Download all images on alibaba.com to new directory 'alibaba-images' hierarchica
 > imaget -y -u alibaba.com -d alibaba-images
 `
 
+// prints out usageMessage and exists
 func usage() {
 	fmt.Fprintf(os.Stderr, usageMessage)
 	os.Exit(2)
@@ -73,13 +74,14 @@ var (
 func main() {
 	flag.Parse()
 
+	// Let's role the dice...
 	if err := Main(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-// Main programm function
+// Main is the main programm function
 func Main() error {
 	// Parse input flags
 	download, err := parse()
@@ -98,6 +100,7 @@ func Main() error {
 }
 
 func parse() (d *imaget.Download, err error) {
+	// URL to find image references on is required
 	if *u == "" {
 		usage()
 	}

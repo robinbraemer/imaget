@@ -12,8 +12,8 @@ Flags
 -u (required): is the http(s) URL to find and images from to download.
 
 -d (optional): is the destination to download the images to.
-               It can either be a directory to drop all images into a .zip
-               archive to create and save all the images into.
+               It can either be the directory to save all images at or
+               a path to create a .zip archive to save the images in.
 
 -f (optional): saves the downloaded images as a flat hierarchie,
                instead of creating subdirectories as per the image download URLs.
