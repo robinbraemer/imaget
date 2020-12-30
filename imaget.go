@@ -1,29 +1,55 @@
+/*
+Package imaget provides a convenient image tool for finding images on any http(s) website and
+downloading them with optional parameters to tweak behaviour and images output.
+*/
 package imaget
 
 import (
+	"archive/zip"
+	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/cavaliercoder/grab"
-	"github.com/schollz/progressbar/v3"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
+// Client is the http client to use.
 var Client = http.DefaultClient
+
+// Std io
+var (
+	Stdout io.Writer = os.Stdout
+	Stderr io.Writer = os.Stderr
+)
 
 // Download holds all parameters to Start a download.
 type Download struct {
 	Src string // The source URL to find and download images from.
 	Dst string // The destination to place the downloaded images at.
 
-	Pattern string         // A shell pattern to filter images.
-	Regex   *regexp.Regexp // A regex to filter images.
+	Regex      *regexp.Regexp // A regex to filter images.
+	SkipAccept bool           // Whether to skip the accept screen before downloading.
+	// Whether to save the images flat, instead of creating
+	// subdirectories as per the image download URLs.
+	SaveFlat bool
+	Bar      ProgressBar
+}
+
+// ProgressBar can show a progress bar for a download.
+type ProgressBar interface {
+	Start()           // Start showing the bar.
+	Finish()          // Finish and hide the bar.
+	SetTotal(int64)   // Set the maximum value.
+	SetCurrent(int64) // Set the current value.
 }
 
 // Start searches for images on the specified website Src and
@@ -31,8 +57,12 @@ type Download struct {
 // Canceling the context will only pause the download and can
 // be resumed to proceed downloading where paused at.
 func (d *Download) Start(ctx context.Context) error {
-	// TODO Prepare destination
-
+	// Prepare images destination
+	dst, err := newDst(d.Dst)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
 	// Create http request
 	req, err := newRequest(ctx, d.Src)
 	if err != nil {
@@ -45,10 +75,31 @@ func (d *Download) Start(ctx context.Context) error {
 	}
 	// Extract matching image urls
 	imageURLs := d.extractImageURLs(content)
+	fmt.Fprintln(Stdout, "Found", len(imageURLs), "matching", pluralize("image", len(imageURLs)), "on", d.Src)
+	fmt.Fprintln(Stdout)
+	// Accept screen
+	if !d.SkipAccept && !acceptScreen(fmt.Sprintf("Do you want to start downloading to destination %q?", dst)) {
+		// Download not accepted
+		return nil
+	}
 	// Download images
-	return downloadImages(ctx, imageURLs, d.Dst)
+	startTime := time.Now()
+	defer func() {
+		fmt.Fprintln(Stdout, "\nDownloaded", len(imageURLs),
+			pluralize("image", len(imageURLs)),
+			"within", time.Since(startTime))
+	}()
+	files := make(chan file, 3)
+	go func() {
+		d.downloadImages(ctx, imageURLs, files)
+		close(files)
+	}()
+	// Copy cached downloads to desired destination
+	copyFilesToDst(ctx, d.SaveFlat, dst, files)
+	return nil
 }
 
+// creates http GET request
 func newRequest(ctx context.Context, url string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -58,6 +109,7 @@ func newRequest(ctx context.Context, url string) (*http.Request, error) {
 	return req, nil
 }
 
+// sends http request and returns response body
 func (d *Download) readSite(req *http.Request) ([]byte, error) {
 	// Send http request
 	res, err := Client.Do(req)
@@ -73,8 +125,10 @@ func (d *Download) readSite(req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+// regex for http(s) image urls
 var imageRegex = regexp.MustCompile(`(http(s?):)([/|.|\w|\s|-])*\.(?:jpg|gif|png)`)
 
+// finds matching image urls
 func (d *Download) extractImageURLs(s []byte) []string {
 	// Filter all image urls from body
 	a := imageRegex.FindAllString(string(s), -1)
@@ -90,100 +144,89 @@ func (d *Download) extractImageURLs(s []byte) []string {
 	}
 	c = nil
 	a = a[:0] // reset slice, reuse allocated capacity
-	// Filter by pattern and/or regex
-	for _, s := range b {
-		if d.Pattern != "" {
-			if match, err := filepath.Match(d.Pattern, s); err == nil || !match {
-				continue
+	// Filter by or regex
+	if d.Regex != nil {
+		for _, s := range b {
+			if d.Regex.MatchString(s) {
+				a = append(a, s)
 			}
 		}
-		if d.Regex != nil && !d.Regex.MatchString(s) {
-			continue
-		}
-		a = append(a, s)
+		return a
 	}
-	b = nil
-	return a
+	return b
 }
 
-func downloadImages(ctx context.Context, imageURLs []string, dst string) error {
-	if len(imageURLs) == 0 {
-		return nil
-	}
+// console interaction to accept start of images download
+func acceptScreen(titel string) (accepted bool) {
+	scan := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprintf(Stdout, "%s (Press y/n): ", titel)
+		if !scan.Scan() {
+			break
+		}
+		switch scan.Text() {
+		case "y", "yes", "j", "":
+			// Accepted
+			return true
+		case "n", "no":
+			return false
+		}
 
-	bar := progressbar.New(100)
-	defer bar.Clear()
+	}
+	return false
+}
+
+// download images from urls to a temporary directory
+func (d *Download) downloadImages(ctx context.Context, imageURLs []string, files chan<- file) {
+	if len(imageURLs) == 0 {
+		return
+	}
+	// Ticker to update bar progress
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
-
-	var buf []byte
+	// Download all images
 	for i, url := range imageURLs {
+		fmt.Fprintf(Stdout, "(%d/%d) %s\n", i+1, len(imageURLs), url)
+		d.Bar.Start()
 		// Download image to temporary file
-		fmt.Printf("(%d/%d) Downloading %s", i+1, len(imageURLs), url)
 		startTime := time.Now()
-		tmpFilename, err := downloadImage(ctx, url, grab.DefaultClient, bar, t)
+		f, err := downloadImage(ctx, url, grab.DefaultClient, d.Bar, t)
+		d.Bar.Finish()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error downloading image: %v\n", err)
+			fmt.Fprintf(Stderr, "error downloading image: %v\n", err)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
 			continue
 		}
-		fmt.Printf(" - Took %s\n", time.Since(startTime))
-
-		// Copy file to destination
-		// TODO do in parallel
-		err = func() error {
-			src, err := os.Open(tmpFilename)
-			if err != nil {
-				return err
-			}
-			defer src.Close()
-
-			dstFile := filepath.Join(dst, filepath.Base(url))
-			dst, err := os.OpenFile(dstFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-			if err != nil {
-				return err
-			}
-			defer dst.Close()
-
-			_, err = io.CopyBuffer(dst, src, buf)
-			if err != nil {
-				err = fmt.Errorf("error copying download (%s) to destination (%s): %w", tmpFilename, dstFile, err)
-			}
-			return err
-		}()
-		if err != nil {
-			return err
-		}
+		fmt.Fprintf(Stdout, " Download finished within %s\n", time.Since(startTime))
+		files <- file{path: f, url: url}
 	}
-
-	return nil
 }
 
+// tmp directory of imaget
 var tmpDir = filepath.Join(os.TempDir(), "imaget")
 
-func downloadImage(
-	ctx context.Context,
-	imageURL string,
-	c *grab.Client,
-	bar *progressbar.ProgressBar,
-	t *time.Ticker,
-) (tmpFilename string, err error) {
+// downloads an image / resumes download from where was stopped last time
+// and returns the name of the downloaded file
+func downloadImage(ctx context.Context, imageURL string, c *grab.Client, bar ProgressBar, t *time.Ticker) (file string, err error) {
 	// Create request
-	req, err := grab.NewRequest(filepath.Join(tmpDir, filename(imageURL)), imageURL)
+	req, err := grab.NewRequest(filepath.Join(tmpDir, base64Filename(imageURL)), imageURL)
 	if err != nil {
 		return "", fmt.Errorf("error creating new download request for %q: %w", imageURL, err)
 	}
 	req = req.WithContext(ctx)
-
 	// Start download
 	res := c.Do(req)
-
 	// Download progress
-	bar.ChangeMax64(res.Size)
+	bar.SetTotal(res.Size)
+	defer bar.SetTotal(res.Size)
+	bar.SetCurrent(res.BytesComplete())
 loop:
 	for {
 		select {
 		case <-t.C:
-			updateDownloadBar(bar, res.Progress(), res.BytesComplete())
+			bar.SetCurrent(res.BytesComplete())
 		case <-res.Done:
 			break loop
 		}
@@ -194,12 +237,146 @@ loop:
 	return res.Filename, nil
 }
 
-func updateDownloadBar(bar *progressbar.ProgressBar, percentage float64, num int64) {
-	desc := fmt.Sprintf("%.2f%s Downloaded...", percentage*100, "%")
-	bar.Describe(desc)
-	_ = bar.Set64(num)
+// copies received files to the destination
+func copyFilesToDst(ctx context.Context, flat bool, dst destination, files <-chan file) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f, ok := <-files:
+			if !ok {
+				return
+			}
+			if err := copyFileToDst(flat, dst, f); err != nil {
+				fmt.Fprintf(Stderr, "error copying image to destination: %v\n", err)
+			}
+		}
+	}
 }
 
-func filename(imageURL string) string {
-	return base64.URLEncoding.EncodeToString([]byte(imageURL + filepath.Ext(imageURL)))
+// copies one file to a destination
+func copyFileToDst(flat bool, dst destination, file file) error {
+	// Open source file to be copies to destination
+	src, err := os.Open(file.path)
+	if err != nil {
+		return fmt.Errorf("error opening file %s: %w", file.path, err)
+	}
+	defer src.Close()
+	// Path where to copy the file to
+	dstFile := filepath.Base(file.path)
+	if !flat {
+		dstFile = strings.TrimPrefix(file.url, "http://")
+		dstFile = strings.TrimPrefix(dstFile, "https://")
+	}
+	// Create/open file in destination
+	f, err := dst.create(dstFile)
+	if err != nil {
+		return fmt.Errorf("error create destination file (%s -> %s): %w", dst, dstFile, err)
+	}
+	defer f.Close()
+	// Copy file to destination
+	_, err = io.Copy(f, src)
+	if err != nil {
+		return fmt.Errorf("error copying download (%s) to destination (%s -> %s): %w", file, dst, dstFile, err)
+	}
+	return nil
 }
+
+// file is a downloaded file with the absolute
+// path and the url it has been downloaded from
+type file struct {
+	path string
+	url  string
+}
+
+// encodes an image url to base64 to become a valid file name
+func base64Filename(imageURL string) string {
+	return base64.URLEncoding.EncodeToString([]byte(imageURL)) + filepath.Ext(imageURL)
+}
+
+// util to append an 's' to a string if count is 1, 0 or -1
+func pluralize(s string, count int) string {
+	if count > 1 || count == 0 || count < -1 {
+		return s + "s"
+	}
+	return s
+}
+
+// creates a destination to be used to save files into
+func newDst(dst string) (destination, error) {
+	dst, err := filepath.Abs(dst)
+	if err != nil {
+		return nil, fmt.Errorf("error getting absolute path of destination: %w", err)
+	}
+	switch filepath.Ext(dst) {
+	case "":
+		// Destination will be a directory
+		return dirDst(dst), nil
+	case ".zip":
+		// Destination will be an archive
+		// Create folder path upon directory of archive
+		if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+			return nil, fmt.Errorf("error creating directory path for archive: %w", err)
+		}
+		return newZipDst(dst)
+	}
+	return nil, errors.New("unsupported destination")
+}
+
+// destination is a file storage. Call Close when finished.
+type destination interface {
+	// Creates a new file in the destination to write to.
+	// Must be closed after done writing.
+	create(file string) (io.WriteCloser, error)
+	// Must be called after use of the destination.
+	io.Closer
+	// The string representation of the destination.
+	fmt.Stringer
+}
+
+// dirDst is a directory destination
+type dirDst string
+
+func (d dirDst) String() string { return string(d) }
+func (d dirDst) create(file string) (io.WriteCloser, error) {
+	// Create folder path upon file
+	path := filepath.Join(string(d), filepath.Dir(file))
+	if err := os.MkdirAll(path, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("error creating directory %q: %w", path, err)
+	}
+	return os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+}
+func (d dirDst) Close() error { return nil }
+
+// zipDst is a zip archive destination
+type zipDst struct {
+	dst string
+	f   *os.File
+	w   *zip.Writer
+}
+
+func newZipDst(dst string) (destination, error) {
+	f, err := os.Create(dst)
+	if err != nil {
+		return nil, fmt.Errorf("error creating destination archive: %w", err)
+	}
+	return &zipDst{
+		dst: dst,
+		f:   f,
+		w:   zip.NewWriter(f),
+	}, nil
+}
+func (d *zipDst) String() string { return d.dst }
+func (d *zipDst) create(file string) (io.WriteCloser, error) {
+	f, err := d.w.Create(file)
+	return &nopCloser{f}, err
+}
+func (d *zipDst) Close() error {
+	defer d.f.Close()
+	return d.w.Close()
+}
+
+// nopCloser is an io.Writer implementing a no-operation io.Closer
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
