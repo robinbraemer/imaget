@@ -85,9 +85,9 @@ func (d *Download) Start(ctx context.Context) error {
 	// Download images
 	startTime := time.Now()
 	defer func() {
-		fmt.Fprintln(Stdout, "\nDownloaded", len(imageURLs),
+		fmt.Fprintln(Stdout, "\nSaved", len(imageURLs),
 			pluralize("image", len(imageURLs)),
-			"within", time.Since(startTime))
+			"within", time.Since(startTime), "at", dst)
 	}()
 	files := make(chan file, 3)
 	go func() {
@@ -263,21 +263,23 @@ func copyFileToDst(flat bool, dst destination, file file) error {
 	}
 	defer src.Close()
 	// Path where to copy the file to
-	dstFile := filepath.Base(file.path)
-	if !flat {
+	var dstFile string
+	if flat {
+		dstFile = filepath.Base(file.path)
+	} else {
 		dstFile = strings.TrimPrefix(file.url, "http://")
 		dstFile = strings.TrimPrefix(dstFile, "https://")
 	}
 	// Create/open file in destination
 	f, err := dst.create(dstFile)
 	if err != nil {
-		return fmt.Errorf("error create destination file (%s -> %s): %w", dst, dstFile, err)
+		return fmt.Errorf("error creating destination file (%s): %w", dstFile, err)
 	}
 	defer f.Close()
 	// Copy file to destination
 	_, err = io.Copy(f, src)
 	if err != nil {
-		return fmt.Errorf("error copying download (%s) to destination (%s -> %s): %w", file, dst, dstFile, err)
+		return fmt.Errorf("error copying %s to destination %s: %w", dstFile, dst, err)
 	}
 	return nil
 }
@@ -340,11 +342,16 @@ type dirDst string
 func (d dirDst) String() string { return string(d) }
 func (d dirDst) create(file string) (io.WriteCloser, error) {
 	// Create folder path upon file
-	path := filepath.Join(string(d), filepath.Dir(file))
-	if err := os.MkdirAll(path, os.ModePerm); err != nil {
-		return nil, fmt.Errorf("error creating directory %q: %w", path, err)
+	file = filepath.Join(string(d), file)
+	dirPath := filepath.Dir(file)
+	if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("error creating directory %q: %w", dirPath, err)
 	}
-	return os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("error opening file %s: %w", file, err)
+	}
+	return f, nil
 }
 func (d dirDst) Close() error { return nil }
 

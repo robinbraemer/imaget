@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const usageMessage = `usage: imaget -u URL [-y] [-d destination] [-t timeout] [-p pattern] [-r regex]
+const usageMessage = `usage: imaget -u URL [-d destination] [-t timeout] [-r regex] [-y] [-s] [-f]
 
 Imaget is a convenient image tool for finding images on any http(s) website and
 downloading them with optional flags to tweak tool behaviour and images output.
@@ -35,12 +35,24 @@ Flags
                Example: 3m3s
 
 -r (optional): is a regular expression to only download images from matching URLs.
-               Example: "(jpg|png)$", "^https?://"
+               Examples: "(jpg|png)$", "^https?://"
 
 -y (optional): starts the download directly without asking.
 
 -s (optional): will make the console silent and produce no console output.
                If used the -y flag is used automatically.
+
+Example commands
+-----------------
+
+Silently download Google's current image above the search box to the current directory.
+> imaget -s -f -u google.com	
+
+Download all images on amazon.com to new Zip archive in the current directory.
+> imaget -y -f -u amazon.com -d amazon-images.zip
+
+Download all images on alibaba.com to new directory 'alibaba-images' hierarchically sorted by image URL.
+> imaget -y -u alibaba.com -d alibaba-images
 `
 
 func usage() {
