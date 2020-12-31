@@ -16,7 +16,7 @@ go install cmd/
 <p align="center">
     <a href="https://player.vimeo.com/video/496021582">
         <img
-            src="https://raw.githubusercontent.com/robinbraemer/imaget/main/docs/etc/play.gif"
+            src="https://raw.githubusercontent.com/robinbraemer/imaget/main/etc/play.gif"
             width="400" height="300">
         <br>
     </a>
