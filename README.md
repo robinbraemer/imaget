@@ -1,5 +1,29 @@
 # imaget
 
+Imaget is a convenient image tool for finding images on any http(s) website and
+downloading them with optional flags to tweak tool behaviour and images output.
+
+## Install
+
+```shell
+git clone https://github.com/robinbraemer/imaget.git
+cd imaget
+go install cmd/
+```
+
+## Showcase Video
+
+<p align="center">
+    <a href="https://player.vimeo.com/video/496021582">
+        <img
+            src="https://raw.githubusercontent.com/robinbraemer/imaget/main/docs/etc/play.gif"
+            width="400" height="300">
+        <br>
+    </a>
+</p>
+
+## Usage
+
 ```shell
 usage: imaget -u URL [-d destination] [-t timeout] [-r regex] [-y] [-s] [-f]
 
