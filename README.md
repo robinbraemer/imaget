@@ -14,7 +14,9 @@ go install cmd/
 ## Showcase Video
 
 <p align="center">
-    <a href="https://player.vimeo.com/video/496021582">
+    <a 
+        target="_blank" rel="noopener noreferrer" 
+        href="https://player.vimeo.com/video/496021582">
         <img
             src="https://raw.githubusercontent.com/robinbraemer/imaget/main/etc/play.gif"
             width="400" height="300">
