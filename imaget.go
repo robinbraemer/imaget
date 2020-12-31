@@ -1,6 +1,6 @@
 /*
 Package imaget provides a convenient image tool for finding images on any http(s) website and
-downloading them with optional parameters to tweak behaviour and images output.
+downloading them with optional parameters to tweak behaviour and output.
 */
 package imaget
 
